@@ -102,7 +102,9 @@ public abstract class TransferItemActionProcessor<T extends TransferItemStackReq
         // Not sending the source helps avoid drag distribution glitches for normal inventories.
         // HOWEVER: equipment containers (OFFHAND/ARMOR) must be sent, otherwise viewers won't get MobEquipment/MobArmor updates.
         boolean sendSource = sourceSlotType == ContainerEnumName.OFFHAND_CONTAINER || sourceSlotType == ContainerEnumName.ARMOR_CONTAINER;
-        boolean sendDest = !(destination instanceof SoleInventory);
+        // The requesting client already predicted the destination slot; an InventorySlotPacket back to it
+        // mid-drag resets its drag state, so the destination is only synced to the other viewers.
+        boolean syncDestToOthers = !(destination instanceof SoleInventory);
 
         if (sourItem.getCount() == count) { // first case：transfer all item
             Item newDest;
@@ -116,12 +118,12 @@ public abstract class TransferItemActionProcessor<T extends TransferItemStackReq
                 newDest = sourItem;
             }
 
-            if (!destination.setItem(destinationSlot, newDest, sendDest)) {
+            if (!destination.setItem(destinationSlot, newDest, false)) {
                 return context.error();
             }
 
             if (!source.clear(sourceSlot, sendSource)) {
-                destination.setItem(destinationSlot, destItem, sendDest);
+                destination.setItem(destinationSlot, destItem, false);
                 return context.error();
             }
 
@@ -138,7 +140,7 @@ public abstract class TransferItemActionProcessor<T extends TransferItemStackReq
                 newDest.setCount(count);
             }
 
-            if (!destination.setItem(destinationSlot, newDest, sendDest)) {
+            if (!destination.setItem(destinationSlot, newDest, false)) {
                 return context.error();
             }
 
@@ -146,11 +148,24 @@ public abstract class TransferItemActionProcessor<T extends TransferItemStackReq
             resultSourItem.setCount(resultSourItem.getCount() - count);
 
             if (!source.setItem(sourceSlot, resultSourItem, sendSource)) {
-                destination.setItem(destinationSlot, destItem, sendDest);
+                destination.setItem(destinationSlot, destItem, false);
                 return context.error();
             }
 
             resultDestItem = destination.getItem(destinationSlot);
+        }
+
+        if (syncDestToOthers) {
+            for (Player viewer : destination.getViewers()) {
+                if (viewer != player) {
+                    destination.sendSlot(destinationSlot, viewer);
+                }
+            }
+        }
+        // Resync the requesting client only when the slot no longer matches what it predicted
+        // (e.g. changed by an item's onChange or a plugin).
+        if (!resultDestItem.equals(sourItem, true, true) || resultDestItem.getCount() != destItem.getCount() + count) {
+            destination.sendSlot(destinationSlot, player);
         }
 
         // Drop furnace experience when player takes item out of the result slot
